@@ -1,0 +1,27 @@
+# dvc.yaml
+stages:
+  prepare_data:
+    cmd: python src/create_mock_data.py
+    outs:
+    - data/twitter_sentiment.csv
+    
+  train:
+    cmd: python src/train.py
+    deps:
+    - src/train.py
+    - data/twitter_sentiment.csv
+    params:
+    - train.max_features
+    - train.test_size
+    - train.random_state
+    outs:
+    - models/sentiment_model.pkl
+    - models/model_info.json
+    metrics:
+    - metrics.json
+    
+  evaluate:
+    cmd: python src/test_model_loading.py
+    deps:
+    - src/test_model_loading.py
+    - models/sentiment_model.pkl

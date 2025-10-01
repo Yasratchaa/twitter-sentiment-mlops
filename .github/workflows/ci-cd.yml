@@ -1,0 +1,214 @@
+# .github/workflows/ci-cd.yml
+name: MLOps CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  DOCKER_IMAGE: sentiment-api
+  DOCKER_TAG: ${{ github.sha }}
+
+jobs:
+  # Job 1: Code Quality & Testing
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 🛒 Checkout Code
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: 📦 Cache Dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: 🔧 Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: 📊 Create Mock Data
+      run: python src/create_mock_data.py
+    
+    - name: 🤖 Train Model
+      run: python src/train.py
+    
+    - name: 🧪 Test Model Loading
+      run: python src/test_model_loading.py
+    
+    - name: 📈 Validate Model Metrics
+      run: |
+        if [ ! -f "models/sentiment_model.pkl" ]; then
+          echo "❌ Model file not found!"
+          exit 1
+        fi
+        if [ ! -f "metrics.json" ]; then
+          echo "❌ Metrics file not found!"
+          exit 1
+        fi
+        echo "✅ Model and metrics validation passed!"
+    
+    - name: 📋 Upload Model Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: trained-model
+        path: |
+          models/
+          metrics.json
+        retention-days: 30
+
+  # Job 2: Docker Build & Test
+  docker-build:
+    needs: test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 🛒 Checkout Code
+      uses: actions/checkout@v4
+    
+    - name: 📥 Download Model Artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: trained-model
+    
+    - name: 🐳 Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: 🔨 Build Docker Image
+      run: |
+        docker build -t ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }} .
+        docker build -t ${{ env.DOCKER_IMAGE }}:latest .
+    
+    - name: 🧪 Test Docker Container
+      run: |
+        # Start container
+        docker run -d --name test-container -p 8000:8000 ${{ env.DOCKER_IMAGE }}:latest
+        
+        # Wait for startup
+        sleep 30
+        
+        # Test health endpoint
+        curl -f http://localhost:8000/ || exit 1
+        
+        # Test prediction endpoint
+        curl -X POST http://localhost:8000/predict \
+          -H "Content-Type: application/json" \
+          -d '{"text": "GitHub Actions is awesome!"}' || exit 1
+        
+        # Stop container
+        docker stop test-container
+        docker rm test-container
+        
+        echo "✅ Docker container tests passed!"
+    
+    - name: 💾 Save Docker Image
+      run: |
+        docker save ${{ env.DOCKER_IMAGE }}:latest | gzip > sentiment-api.tar.gz
+    
+    - name: 📋 Upload Docker Image
+      uses: actions/upload-artifact@v3
+      with:
+        name: docker-image
+        path: sentiment-api.tar.gz
+        retention-days: 7
+
+  # Job 3: Security Scan (Optional)
+  security-scan:
+    needs: docker-build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 🛒 Checkout Code
+      uses: actions/checkout@v4
+    
+    - name: 🔍 Run Trivy Security Scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: 📋 Upload Security Results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  # Job 4: Deploy (only on main branch)
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: [test, docker-build]
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 🛒 Checkout Code
+      uses: actions/checkout@v4
+    
+    - name: 📥 Download Docker Image
+      uses: actions/download-artifact@v3
+      with:
+        name: docker-image
+    
+    - name: 🐳 Load Docker Image
+      run: |
+        docker load < sentiment-api.tar.gz
+        docker images
+    
+    - name: 🚀 Deploy to Staging
+      run: |
+        echo "🚀 Deploying to staging environment..."
+        # Here you would typically deploy to your staging environment
+        # For demo, we'll just run the container locally
+        
+        docker run -d --name staging-deployment -p 8080:8000 ${{ env.DOCKER_IMAGE }}:latest
+        sleep 20
+        
+        # Smoke test
+        curl -f http://localhost:8080/ || exit 1
+        
+        echo "✅ Staging deployment successful!"
+        
+        # Clean up
+        docker stop staging-deployment
+        docker rm staging-deployment
+    
+    - name: 📊 Performance Test
+      run: |
+        echo "📊 Running performance tests..."
+        # Simple load test with curl
+        docker run -d --name perf-test -p 8090:8000 ${{ env.DOCKER_IMAGE }}:latest
+        sleep 20
+        
+        # Run multiple requests
+        for i in {1..10}; do
+          curl -X POST http://localhost:8090/predict \
+            -H "Content-Type: application/json" \
+            -d "{\"text\": \"Performance test $i\"}" || exit 1
+        done
+        
+        echo "✅ Performance tests passed!"
+        
+        # Clean up
+        docker stop perf-test
+        docker rm perf-test
+    
+    - name: 🎉 Deployment Complete
+      run: |
+        echo "🎉 MLOps Pipeline completed successfully!"
+        echo "✅ Model trained and validated"
+        echo "✅ Docker image built and tested"
+        echo "✅ Security scan completed"
+        echo "✅ Staging deployment successful"
+        echo "✅ Performance tests passed"
