@@ -1,0 +1,7 @@
+{
+  "model_type": "Logistic Regression with TF-IDF",
+  "features": "TF-IDF vectors (max_features=5000, ngram_range=(1,2))",
+  "accuracy": 1.0,
+  "train_date": "2025-10-01T11:19:47.894565",
+  "model_file": "models/sentiment_model.pkl"
+}
